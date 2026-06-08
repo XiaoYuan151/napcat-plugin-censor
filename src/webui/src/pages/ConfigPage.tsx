@@ -2,33 +2,38 @@ import { useState, useEffect, useCallback } from 'react'
 import { noAuthFetch } from '../utils/api'
 import { showToast } from '../hooks/useToast'
 import type { PluginConfig } from '../types'
-import { IconTerminal } from '../components/icons'
+import { IconRefresh, IconTerminal } from '../components/icons'
 
 export default function ConfigPage() {
     const [config, setConfig] = useState<PluginConfig | null>(null)
     const [saving, setSaving] = useState(false)
+    const [reloading, setReloading] = useState(false)
 
     const fetchConfig = useCallback(async () => {
         try {
             const res = await noAuthFetch<PluginConfig>('/config')
             if (res.code === 0 && res.data) setConfig(res.data)
-        } catch { showToast('获取配置失败', 'error') }
+        } catch {
+            showToast('获取配置失败', 'error')
+        }
     }, [])
 
     useEffect(() => { fetchConfig() }, [fetchConfig])
 
     const saveConfig = useCallback(async (update: Partial<PluginConfig>) => {
         if (!config) return
+        const nextConfig = { ...config, ...update }
+        setConfig(nextConfig)
         setSaving(true)
+
         try {
-            const newConfig = { ...config, ...update }
             await noAuthFetch('/config', {
                 method: 'POST',
-                body: JSON.stringify(newConfig),
+                body: JSON.stringify(nextConfig),
             })
-            setConfig(newConfig)
             showToast('配置已保存', 'success')
         } catch {
+            setConfig(config)
             showToast('保存失败', 'error')
         } finally {
             setSaving(false)
@@ -36,10 +41,19 @@ export default function ConfigPage() {
     }, [config])
 
     const updateField = <K extends keyof PluginConfig>(key: K, value: PluginConfig[K]) => {
-        if (!config) return
-        const updated = { ...config, [key]: value }
-        setConfig(updated)
-        saveConfig({ [key]: value })
+        saveConfig({ [key]: value } as Partial<PluginConfig>)
+    }
+
+    const reloadDictionary = async () => {
+        setReloading(true)
+        try {
+            await noAuthFetch('/dictionary/reload', { method: 'POST' })
+            showToast('词库已重新加载', 'success')
+        } catch {
+            showToast('词库加载失败', 'error')
+        } finally {
+            setReloading(false)
+        }
     }
 
     if (!config) {
@@ -55,39 +69,97 @@ export default function ConfigPage() {
 
     return (
         <div className="space-y-6 stagger-children">
-            {/* 基础配置 */}
             <div className="card p-5 hover-lift">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-5">
-                    <IconTerminal size={16} className="text-gray-400" />
-                    基础配置
-                </h3>
+                <div className="flex items-center justify-between gap-3 mb-5">
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                        <IconTerminal size={16} className="text-gray-400" />
+                        基础配置
+                    </h3>
+                    <button className="btn btn-ghost text-xs" onClick={reloadDictionary} disabled={reloading}>
+                        <IconRefresh size={13} />
+                        {reloading ? '加载中' : '重载词库'}
+                    </button>
+                </div>
+
                 <div className="space-y-5">
                     <ToggleRow
                         label="启用插件"
-                        desc="全局开关，关闭后不响应任何命令"
+                        desc="关闭后不会审查任何消息"
                         checked={config.enabled}
-                        onChange={(v) => updateField('enabled', v)}
+                        onChange={(value) => updateField('enabled', value)}
                     />
                     <ToggleRow
-                        label="调试模式"
-                        desc="启用后输出详细日志到控制台"
+                        label="调试日志"
+                        desc="输出更详细的运行日志"
                         checked={config.debug}
-                        onChange={(v) => updateField('debug', v)}
+                        onChange={(value) => updateField('debug', value)}
+                    />
+                    <ToggleRow
+                        label="发送过滤提示"
+                        desc="撤回违规消息后在群内提示用户"
+                        checked={config.showFilterNotice}
+                        onChange={(value) => updateField('showFilterNotice', value)}
                     />
                     <InputRow
-                        label="命令前缀"
-                        desc="触发命令的前缀"
-                        value={config.commandPrefix}
-                        onChange={(v) => updateField('commandPrefix', v)}
+                        label="管理员 QQ"
+                        desc="多个 QQ 使用英文逗号分隔"
+                        value={config.adminIds}
+                        onChange={(value) => updateField('adminIds', value)}
                     />
                     <InputRow
-                        label="冷却时间 (秒)"
-                        desc="同一命令请求冷却时间，0 表示不限制"
-                        value={String(config.cooldownSeconds)}
+                        label="审查群号"
+                        desc="多个群号使用英文逗号分隔；也可在群管理中启用"
+                        value={config.censorGroups}
+                        onChange={(value) => updateField('censorGroups', value)}
+                    />
+                    <TextAreaRow
+                        label="自定义敏感词"
+                        desc="多个词使用英文逗号、中文逗号或换行分隔"
+                        value={config.censorWords}
+                        onChange={(value) => updateField('censorWords', value)}
+                    />
+                    <div className="grid gap-4 sm:grid-cols-3">
+                        <InputRow
+                            label="禁言触发次数"
+                            desc="0 表示不自动禁言"
+                            value={String(config.maxViolations)}
+                            type="number"
+                            onChange={(value) => updateField('maxViolations', Number(value) || 0)}
+                        />
+                        <InputRow
+                            label="禁言时长（秒）"
+                            desc="触发禁言后的持续时间"
+                            value={String(config.banDurationSeconds)}
+                            type="number"
+                            onChange={(value) => updateField('banDurationSeconds', Number(value) || 0)}
+                        />
+                        <InputRow
+                            label="上报批量"
+                            desc="累计多少条后发给管理员"
+                            value={String(config.reportBatchSize)}
+                            type="number"
+                            onChange={(value) => updateField('reportBatchSize', Math.max(1, Number(value) || 1))}
+                        />
+                    </div>
+                    <InputRow
+                        label="远程词库地址"
+                        desc="本地词库不可用时加载该 base64 词库"
+                        value={config.dictionaryUrl}
+                        onChange={(value) => updateField('dictionaryUrl', value)}
+                    />
+                    <InputRow
+                        label="模型审查 API"
+                        desc="兼容 OpenAI chat completions 的接口；留空则只使用词库"
+                        value={config.guardApiUrl}
+                        onChange={(value) => updateField('guardApiUrl', value)}
+                    />
+                    <InputRow
+                        label="模型超时（毫秒）"
+                        desc="超时后跳过模型结果"
+                        value={String(config.guardTimeoutMs)}
                         type="number"
-                        onChange={(v) => updateField('cooldownSeconds', Number(v) || 0)}
+                        onChange={(value) => updateField('guardTimeoutMs', Math.max(1000, Number(value) || 10000))}
                     />
-                    {/* TODO: 在这里添加你的配置项 */}
                 </div>
             </div>
 
@@ -101,19 +173,20 @@ export default function ConfigPage() {
     )
 }
 
-/* ---- 子组件 ---- */
-
 function ToggleRow({ label, desc, checked, onChange }: {
-    label: string; desc: string; checked: boolean; onChange: (v: boolean) => void
+    label: string
+    desc: string
+    checked: boolean
+    onChange: (value: boolean) => void
 }) {
     return (
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
             <div>
                 <div className="text-sm font-medium text-gray-800 dark:text-gray-200">{label}</div>
                 <div className="text-xs text-gray-400 mt-0.5">{desc}</div>
             </div>
             <label className="toggle">
-                <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+                <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
                 <div className="slider" />
             </label>
         </div>
@@ -121,7 +194,11 @@ function ToggleRow({ label, desc, checked, onChange }: {
 }
 
 function InputRow({ label, desc, value, type = 'text', onChange }: {
-    label: string; desc: string; value: string; type?: string; onChange: (v: string) => void
+    label: string
+    desc: string
+    value: string
+    type?: string
+    onChange: (value: string) => void
 }) {
     const [local, setLocal] = useState(value)
     useEffect(() => { setLocal(value) }, [value])
@@ -138,9 +215,36 @@ function InputRow({ label, desc, value, type = 'text', onChange }: {
                 className="input-field"
                 type={type}
                 value={local}
-                onChange={(e) => setLocal(e.target.value)}
+                onChange={(event) => setLocal(event.target.value)}
                 onBlur={handleBlur}
-                onKeyDown={(e) => e.key === 'Enter' && handleBlur()}
+                onKeyDown={(event) => event.key === 'Enter' && handleBlur()}
+            />
+        </div>
+    )
+}
+
+function TextAreaRow({ label, desc, value, onChange }: {
+    label: string
+    desc: string
+    value: string
+    onChange: (value: string) => void
+}) {
+    const [local, setLocal] = useState(value)
+    useEffect(() => { setLocal(value) }, [value])
+
+    const handleBlur = () => {
+        if (local !== value) onChange(local)
+    }
+
+    return (
+        <div>
+            <div className="text-sm font-medium text-gray-800 dark:text-gray-200 mb-1">{label}</div>
+            <div className="text-xs text-gray-400 mb-2">{desc}</div>
+            <textarea
+                className="input-field min-h-24 resize-y"
+                value={local}
+                onChange={(event) => setLocal(event.target.value)}
+                onBlur={handleBlur}
             />
         </div>
     )

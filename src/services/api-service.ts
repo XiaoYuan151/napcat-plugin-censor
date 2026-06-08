@@ -1,47 +1,40 @@
-/**
- * API 服务模块
- * 注册 WebUI API 路由（无认证模式）
- * 
- * NapCat 路由器提供两种注册方式：
- * - router.get / router.post：需要认证（NapCat WebUI 登录后才能访问）
- * - router.getNoAuth / router.postNoAuth：无需认证（插件自己的 WebUI 页面可直接调用）
- * 
- * 一般插件自带的 WebUI 页面使用 NoAuth 路由，因为页面本身已在 NapCat WebUI 内嵌展示。
- */
-
-import type { NapCatPluginContext, PluginHttpRequest, PluginHttpResponse } from 'napcat-types/napcat-onebot/network/plugin/types';
-import type { OB11Group } from 'napcat-types/napcat-onebot/types';
+import type {
+    NapCatPluginContext,
+    OB11Group,
+    PluginHttpRequest,
+    PluginHttpResponse,
+} from '../napcat';
 import { pluginState } from '../core/state';
+import { censorService } from './censor-service';
+import type { PluginConfig } from '../types';
 
-/**
- * 解析请求体
- * PluginHttpRequest.body 已由框架解析
- */
 function parseBody(req: PluginHttpRequest): Record<string, unknown> {
-    if (req.body && typeof req.body === 'object' && Object.keys(req.body as object).length > 0) {
+    if (req.body && typeof req.body === 'object') {
         return req.body as Record<string, unknown>;
     }
     return {};
 }
 
-/**
- * 注册 API 路由
- * @param ctx 插件上下文
- */
+function sendError(res: PluginHttpResponse, status: number, error: unknown): void {
+    res.status(status).json({
+        code: -1,
+        message: error instanceof Error ? error.message : String(error),
+    });
+}
+
 export function registerApiRoutes(ctx: NapCatPluginContext): void {
     const router = ctx.router;
 
-    // ==================== 基础接口（无认证）====================
-
-    // 插件信息
     router.getNoAuth('/info', (_req: PluginHttpRequest, res: PluginHttpResponse) => {
         res.json({
             code: 0,
-            data: { pluginName: ctx.pluginName }
+            data: {
+                pluginName: ctx.pluginName,
+                dictionarySize: censorService.dictionarySize,
+            },
         });
     });
 
-    // 状态接口
     router.getNoAuth('/status', (_req: PluginHttpRequest, res: PluginHttpResponse) => {
         res.json({
             code: 0,
@@ -50,34 +43,37 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
                 uptime: pluginState.getUptime(),
                 uptimeFormatted: pluginState.getUptimeFormatted(),
                 config: pluginState.getConfig(),
-                stats: pluginState.stats
-            }
+                stats: pluginState.stats,
+                dictionarySize: censorService.dictionarySize,
+            },
         });
     });
 
-    // ==================== 配置接口（无认证）====================
-
-    // 获取配置
     router.getNoAuth('/config', (_req: PluginHttpRequest, res: PluginHttpResponse) => {
         res.json({ code: 0, data: pluginState.getConfig() });
     });
 
-    // 保存配置
     router.postNoAuth('/config', async (req: PluginHttpRequest, res: PluginHttpResponse) => {
         try {
-            const body = parseBody(req);
-            pluginState.setConfig(ctx, body as Partial<import('../types').PluginConfig>);
-            pluginState.log('info', '配置已保存');
+            pluginState.setConfig(ctx, parseBody(req) as Partial<PluginConfig>);
+            await censorService.initialize(pluginState.config);
             res.json({ code: 0, message: 'ok' });
-        } catch (err) {
-            pluginState.log('error', '保存配置失败:', err);
-            res.status(500).json({ code: -1, message: String(err) });
+        } catch (error) {
+            pluginState.log('error', 'Failed to save config', error);
+            sendError(res, 500, error);
         }
     });
 
-    // ==================== 群管理接口（无认证）====================
+    router.postNoAuth('/dictionary/reload', async (_req: PluginHttpRequest, res: PluginHttpResponse) => {
+        try {
+            await censorService.reloadDictionary(pluginState.config);
+            res.json({ code: 0, data: { dictionarySize: censorService.dictionarySize } });
+        } catch (error) {
+            pluginState.log('error', 'Failed to reload dictionary', error);
+            sendError(res, 500, error);
+        }
+    });
 
-    // 获取群列表
     router.getNoAuth('/groups', async (_req: PluginHttpRequest, res: PluginHttpResponse) => {
         try {
             const groups = await ctx.actions.call(
@@ -86,71 +82,67 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
                 ctx.adapterName,
                 ctx.pluginManager.config
             ) as OB11Group[];
-            const config = pluginState.getConfig();
 
-            // 为每个群添加配置信息
-            const groupsWithConfig = (groups || []).map((group) => {
-                const groupId = String(group.group_id);
-                const groupConfig = config.groupConfigs?.[groupId] || {};
-                return {
+            res.json({
+                code: 0,
+                data: (groups || []).map((group) => ({
                     ...group,
-                    enabled: groupConfig.enabled !== false
-                };
+                    enabled: pluginState.shouldCensorGroup(group.group_id),
+                })),
             });
-
-            res.json({ code: 0, data: groupsWithConfig });
-        } catch (e) {
-            pluginState.log('error', '获取群列表失败:', e);
-            res.status(500).json({ code: -1, message: String(e) });
+        } catch (error) {
+            pluginState.log('error', 'Failed to fetch groups', error);
+            sendError(res, 500, error);
         }
     });
 
-    // 更新群配置
     router.postNoAuth('/groups/:id/config', async (req: PluginHttpRequest, res: PluginHttpResponse) => {
         try {
             const groupId = String(req.params?.id || '');
             if (!groupId) {
-                return res.status(400).json({ code: -1, message: '缺少群 ID' });
+                sendError(res, 400, 'Missing group id');
+                return;
             }
 
-            const body = parseBody(req);
-            const { enabled } = body;
+            const enabled = parseBody(req).enabled;
+            if (typeof enabled !== 'boolean') {
+                sendError(res, 400, 'enabled must be boolean');
+                return;
+            }
 
-            pluginState.updateGroupConfig(ctx, groupId, { enabled: Boolean(enabled) });
-            pluginState.log('info', `群 ${groupId} 配置已更新: enabled=${enabled}`);
+            pluginState.updateGroupConfig(ctx, groupId, { enabled });
             res.json({ code: 0, message: 'ok' });
-        } catch (err) {
-            pluginState.log('error', '更新群配置失败:', err);
-            res.status(500).json({ code: -1, message: String(err) });
+        } catch (error) {
+            pluginState.log('error', 'Failed to update group config', error);
+            sendError(res, 500, error);
         }
     });
 
-    // 批量更新群配置
     router.postNoAuth('/groups/bulk-config', async (req: PluginHttpRequest, res: PluginHttpResponse) => {
         try {
             const body = parseBody(req);
             const { enabled, groupIds } = body;
 
             if (typeof enabled !== 'boolean' || !Array.isArray(groupIds)) {
-                return res.status(400).json({ code: -1, message: '参数错误' });
+                sendError(res, 400, 'enabled and groupIds are required');
+                return;
             }
 
-            const currentGroupConfigs = { ...(pluginState.config.groupConfigs || {}) };
+            const groupConfigs = { ...(pluginState.config.groupConfigs || {}) };
             for (const groupId of groupIds) {
-                const gid = String(groupId);
-                currentGroupConfigs[gid] = { ...currentGroupConfigs[gid], enabled };
+                groupConfigs[String(groupId)] = {
+                    ...groupConfigs[String(groupId)],
+                    enabled,
+                };
             }
 
-            pluginState.setConfig(ctx, { groupConfigs: currentGroupConfigs });
-            pluginState.log('info', `批量更新群配置完成 | 数量: ${groupIds.length}, enabled=${enabled}`);
+            pluginState.setConfig(ctx, { groupConfigs });
             res.json({ code: 0, message: 'ok' });
-        } catch (err) {
-            pluginState.log('error', '批量更新群配置失败:', err);
-            res.status(500).json({ code: -1, message: String(err) });
+        } catch (error) {
+            pluginState.log('error', 'Failed to update groups in bulk', error);
+            sendError(res, 500, error);
         }
     });
 
-    // TODO: 在这里添加你的自定义 API 路由
-
-    pluginState.logDebug('API 路由注册完成');
+    pluginState.logDebug('API routes registered');
 }

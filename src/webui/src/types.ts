@@ -1,13 +1,15 @@
-/** WebUI 前端类型定义 */
-
 export interface PluginStatus {
     pluginName: string
     uptime: number
     uptimeFormatted: string
     config: PluginConfig
+    dictionarySize: number
     stats: {
         processed: number
         todayProcessed: number
+        blocked: number
+        reported: number
+        banned: number
         lastUpdateDay: string
     }
 }
@@ -15,10 +17,17 @@ export interface PluginStatus {
 export interface PluginConfig {
     enabled: boolean
     debug: boolean
-    commandPrefix: string
-    cooldownSeconds: number
+    adminIds: string
+    censorGroups: string
+    censorWords: string
+    maxViolations: number
+    banDurationSeconds: number
+    reportBatchSize: number
+    showFilterNotice: boolean
+    dictionaryUrl: string
+    guardApiUrl: string
+    guardTimeoutMs: number
     groupConfigs?: Record<string, GroupConfig>
-    // TODO: 在这里添加你的插件配置项类型
 }
 
 export interface GroupConfig {

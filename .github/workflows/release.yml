@@ -67,13 +67,16 @@ jobs:
           mkdir -p release
 
           # 复制需要的文件到临时目录
-          cp index.mjs release/
-          cp package.json release/
+          cp dist/index.mjs release/
+          cp dist/package.json release/
           cp README.md release/
+          [ -f dist/dictionary.txt ] && cp dist/dictionary.txt release/
+          [ -f dist/dictionary.b64 ] && cp dist/dictionary.b64 release/
+          [ -d dist/webui ] && cp -r dist/webui release/
 
           # 进入临时目录并压缩
           cd release
-          zip -r ../${PLUGIN_NAME}.zip index.mjs package.json README.md
+          zip -r ../${PLUGIN_NAME}.zip .
 
       - name: Verify zip contents
         run: |

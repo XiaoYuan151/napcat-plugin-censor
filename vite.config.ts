@@ -34,6 +34,12 @@ function copyDirRecursive(src: string, dest: string) {
     }
 }
 
+function copyFileIfExists(src: string, dest: string) {
+    if (fs.existsSync(src)) {
+        fs.copyFileSync(src, dest);
+    }
+}
+
 /**
  * 构建后自动复制资源的 Vite 插件
  * - 复制 webui 构建产物到 dist/webui
@@ -72,7 +78,7 @@ function copyAssetsPlugin() {
                         plugin: pkg.plugin,
                         version: pkg.version,
                         type: pkg.type,
-                        main: pkg.main,
+                        main: 'index.mjs',
                         description: pkg.description,
                         author: pkg.author,
                         dependencies: pkg.dependencies,
@@ -84,7 +90,11 @@ function copyAssetsPlugin() {
                     console.log('[copy-assets] ✅ 已生成精简 package.json');
                 }
 
-                // 3. 复制 templates 目录（如果存在）
+                // 3. 复制本地词库资源（如果存在）
+                copyFileIfExists(resolve(__dirname, 'dictionary.txt'), resolve(distDir, 'dictionary.txt'));
+                copyFileIfExists(resolve(__dirname, 'dictionary.b64'), resolve(distDir, 'dictionary.b64'));
+
+                // 4. 复制 templates 目录（如果存在）
                 const templatesSrc = resolve(__dirname, 'templates');
                 if (fs.existsSync(templatesSrc)) {
                     copyDirRecursive(templatesSrc, resolve(distDir, 'templates'));

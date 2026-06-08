@@ -1,162 +1,146 @@
-/**
- * 状态管理模块
- * 插件全局状态类，封装配置、日志、上下文等
- */
+import fs from 'node:fs';
+import path from 'node:path';
+import { getDefaultConfig } from '../config';
+import type { NapCatActions, NapCatPluginContext, PluginLogger } from '../napcat';
+import type { GroupConfig, PluginConfig, PluginStats } from '../types';
+import { splitCommaList } from '../utils/list';
 
-import fs from 'fs';
-import path from 'path';
-import type { NapCatPluginContext, PluginLogger } from 'napcat-types/napcat-onebot/network/plugin/types';
-import type { ActionMap } from 'napcat-types/napcat-onebot/action/index';
-import type { NetworkAdapterConfig } from 'napcat-types/napcat-onebot/config/config';
-import { DEFAULT_CONFIG, getDefaultConfig } from '../config';
-import type { PluginConfig, GroupConfig } from '../types';
+const LOG_TAG = '[napcat-plugin-censor]';
 
-/** 日志前缀 - 修改为你的插件名称 */
-const LOG_TAG = '[Plugin]';
-
-// ==================== 类型安全的清洗辅助函数 ====================
-
-/** 安全提取 boolean 值 */
-function safeBool(obj: Record<string, unknown>, key: string): boolean | undefined {
-    return typeof obj[key] === 'boolean' ? obj[key] as boolean : undefined;
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** 安全提取 string 值 */
-function safeStr(obj: Record<string, unknown>, key: string): string | undefined {
-    return typeof obj[key] === 'string' ? obj[key] as string : undefined;
+function readString(source: Record<string, unknown>, key: string): string | undefined {
+    const value = source[key];
+    return typeof value === 'string' ? value : undefined;
 }
 
-/** 安全提取 number 值 */
-function safeNum(obj: Record<string, unknown>, key: string): number | undefined {
-    return typeof obj[key] === 'number' ? obj[key] as number : undefined;
+function readBoolean(source: Record<string, unknown>, key: string): boolean | undefined {
+    const value = source[key];
+    return typeof value === 'boolean' ? value : undefined;
 }
 
-/** 类型守卫：判断是否为对象 */
-function isObject(v: unknown): v is Record<string, unknown> {
-    return v !== null && typeof v === 'object';
-}
-
-/**
- * 配置清洗函数
- * 确保从文件读取的配置符合预期类型
- */
-function sanitizeConfig(raw: unknown): PluginConfig {
-    if (!isObject(raw)) return getDefaultConfig();
-    const r = raw as Record<string, unknown>;
-    const out: PluginConfig = getDefaultConfig();
-
-    // 基础配置
-    const enabled = safeBool(r, 'enabled');
-    if (enabled !== undefined) out.enabled = enabled;
-
-    const debug = safeBool(r, 'debug');
-    if (debug !== undefined) out.debug = debug;
-
-    const commandPrefix = safeStr(r, 'commandPrefix');
-    if (commandPrefix !== undefined) out.commandPrefix = commandPrefix;
-
-    const cooldownSeconds = safeNum(r, 'cooldownSeconds');
-    if (cooldownSeconds !== undefined) out.cooldownSeconds = cooldownSeconds;
-
-    // 群配置
-    const rawGroupConfigs = r['groupConfigs'];
-    if (isObject(rawGroupConfigs)) {
-        out.groupConfigs = {};
-        for (const groupId of Object.keys(rawGroupConfigs as Record<string, unknown>)) {
-            const groupConfig = (rawGroupConfigs as Record<string, unknown>)[groupId];
-            if (isObject(groupConfig)) {
-                const gc = groupConfig as Record<string, unknown>;
-                const cfg: GroupConfig = {};
-                const gcEnabled = safeBool(gc, 'enabled');
-                if (gcEnabled !== undefined) cfg.enabled = gcEnabled;
-                out.groupConfigs![groupId] = cfg;
-            }
-        }
+function readNumber(source: Record<string, unknown>, key: string): number | undefined {
+    const value = source[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() !== '') {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) return parsed;
     }
+    return undefined;
+}
 
-    // TODO: 在这里添加你的配置项清洗逻辑
+function readNumberWithLegacy(source: Record<string, unknown>, key: string, legacyKey: string): number | undefined {
+    return readNumber(source, key) ?? readNumber(source, legacyKey);
+}
 
+function readBooleanWithLegacy(source: Record<string, unknown>, key: string, legacyKey: string): boolean | undefined {
+    return readBoolean(source, key) ?? readBoolean(source, legacyKey);
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+
+function sanitizeGroupConfigs(raw: unknown): Record<string, GroupConfig> {
+    if (!isRecord(raw)) return {};
+
+    const out: Record<string, GroupConfig> = {};
+    for (const [groupId, value] of Object.entries(raw)) {
+        if (!isRecord(value)) continue;
+        const enabled = readBoolean(value, 'enabled');
+        out[groupId] = enabled === undefined ? {} : { enabled };
+    }
     return out;
 }
 
-/**
- * 插件全局状态类
- * 封装配置、日志、上下文等，提供统一的状态管理接口
- */
+export function sanitizeConfig(raw: unknown): PluginConfig {
+    const defaults = getDefaultConfig();
+    if (!isRecord(raw)) return defaults;
+
+    const config: PluginConfig = { ...defaults };
+
+    config.enabled = readBoolean(raw, 'enabled') ?? config.enabled;
+    config.debug = readBoolean(raw, 'debug') ?? config.debug;
+    config.adminIds = readString(raw, 'adminIds') ?? config.adminIds;
+    config.censorGroups = readString(raw, 'censorGroups') ?? config.censorGroups;
+    config.censorWords = readString(raw, 'censorWords') ?? config.censorWords;
+    config.dictionaryUrl = readString(raw, 'dictionaryUrl') ?? config.dictionaryUrl;
+    config.guardApiUrl = readString(raw, 'guardApiUrl') ?? config.guardApiUrl;
+    config.showFilterNotice = readBooleanWithLegacy(raw, 'showFilterNotice', 'filterMsg') ?? config.showFilterNotice;
+
+    const maxViolations = readNumberWithLegacy(raw, 'maxViolations', 'maxAgainst');
+    if (maxViolations !== undefined) config.maxViolations = clampInteger(maxViolations, 0, 1000);
+
+    const banDurationSeconds = readNumberWithLegacy(raw, 'banDurationSeconds', 'banDuration');
+    if (banDurationSeconds !== undefined) config.banDurationSeconds = clampInteger(banDurationSeconds, 0, 2592000);
+
+    const reportBatchSize = readNumberWithLegacy(raw, 'reportBatchSize', 'sendTime');
+    if (reportBatchSize !== undefined) config.reportBatchSize = clampInteger(reportBatchSize, 1, 1000);
+
+    const guardTimeoutMs = readNumber(raw, 'guardTimeoutMs');
+    if (guardTimeoutMs !== undefined) config.guardTimeoutMs = clampInteger(guardTimeoutMs, 1000, 120000);
+
+    config.groupConfigs = sanitizeGroupConfigs(raw.groupConfigs);
+
+    return config;
+}
+
+function createStats(): PluginStats {
+    return {
+        processed: 0,
+        todayProcessed: 0,
+        blocked: 0,
+        reported: 0,
+        banned: 0,
+        lastUpdateDay: new Date().toDateString(),
+    };
+}
+
+function sanitizeStats(raw: unknown, fallback: PluginStats): PluginStats {
+    if (!isRecord(raw)) return { ...fallback };
+
+    return {
+        processed: clampInteger(readNumber(raw, 'processed') ?? fallback.processed, 0, Number.MAX_SAFE_INTEGER),
+        todayProcessed: clampInteger(readNumber(raw, 'todayProcessed') ?? fallback.todayProcessed, 0, Number.MAX_SAFE_INTEGER),
+        blocked: clampInteger(readNumber(raw, 'blocked') ?? fallback.blocked, 0, Number.MAX_SAFE_INTEGER),
+        reported: clampInteger(readNumber(raw, 'reported') ?? fallback.reported, 0, Number.MAX_SAFE_INTEGER),
+        banned: clampInteger(readNumber(raw, 'banned') ?? fallback.banned, 0, Number.MAX_SAFE_INTEGER),
+        lastUpdateDay: readString(raw, 'lastUpdateDay') ?? fallback.lastUpdateDay,
+    };
+}
+
 class PluginState {
-    /** 日志器 */
     logger: PluginLogger | null = null;
-    /** NapCat actions 对象，用于调用 API */
-    actions: ActionMap | undefined;
-    /** 适配器名称 */
-    adapterName: string = '';
-    /** 网络配置 */
-    networkConfig: NetworkAdapterConfig | null = null;
-    /** 插件配置 */
-    config: PluginConfig = { ...DEFAULT_CONFIG };
-    /** 配置文件路径 */
-    configPath: string = '';
-    /** 数据目录路径 */
-    dataPath: string = '';
-    /** 插件名称 */
-    pluginName: string = '';
-    /** 插件启动时间戳 */
-    startTime: number = 0;
-    /** 是否已初始化 */
-    initialized: boolean = false;
-    /** 统计信息 */
-    stats: {
-        processed: number;
-        todayProcessed: number;
-        lastUpdateDay: string;
-    } = {
-            processed: 0,
-            todayProcessed: 0,
-            lastUpdateDay: new Date().toDateString()
-        };
+    actions: NapCatActions | undefined;
+    adapterName = '';
+    networkConfig: unknown = null;
+    config: PluginConfig = getDefaultConfig();
+    configPath = '';
+    dataPath = '';
+    pluginName = '';
+    startTime = 0;
+    initialized = false;
+    stats: PluginStats = createStats();
 
-    /**
-     * 通用日志方法
-     */
-    log(level: 'info' | 'warn' | 'error', msg: string, ...args: unknown[]): void {
-        if (!this.logger) return;
-        this.logger[level](`${LOG_TAG} ${msg}`, ...args);
+    log(level: 'info' | 'warn' | 'error', message: string, ...args: unknown[]): void {
+        this.logger?.[level](`${LOG_TAG} ${message}`, ...args);
     }
 
-    /**
-     * 调试日志
-     * 只有当 debug 配置开启时才输出
-     */
-    logDebug(msg: string, ...args: unknown[]): void {
+    logDebug(message: string, ...args: unknown[]): void {
         if (!this.config.debug) return;
-        if (this.logger) {
-            this.logger.info(`${LOG_TAG} [DEBUG] ${msg}`, ...args);
-        }
+        this.logger?.info(`${LOG_TAG} [debug] ${message}`, ...args);
     }
 
-    /**
-     * 调用 OneBot API
-     * @param api API 名称
-     * @param params 参数
-     * @returns API 返回结果
-     */
     async callApi(api: string, params: Record<string, unknown>): Promise<unknown> {
-        if (!this.actions) {
-            this.log('error', `调用 API ${api} 失败: actions 未初始化`);
-            return null;
+        if (!this.actions || !this.networkConfig) {
+            throw new Error(`NapCat actions are not initialized for ${api}`);
         }
-        try {
-            const result = await this.actions.call(api as 'get_status', params, this.adapterName, this.networkConfig!);
-            return result;
-        } catch (error) {
-            this.log('error', `调用 API ${api} 失败:`, error);
-            throw error;
-        }
+
+        return this.actions.call(api, params, this.adapterName, this.networkConfig);
     }
 
-    /**
-     * 从 ctx 初始化状态
-     */
     initFromContext(ctx: NapCatPluginContext): void {
         this.logger = ctx.logger;
         this.actions = ctx.actions;
@@ -164,146 +148,147 @@ class PluginState {
         this.networkConfig = ctx.pluginManager?.config || null;
         this.configPath = ctx.configPath || '';
         this.pluginName = ctx.pluginName || '';
-        this.dataPath = ctx.configPath ? path.dirname(ctx.configPath) : path.join(process.cwd(), 'data', 'napcat-plugin');
+        this.dataPath = ctx.configPath ? path.dirname(ctx.configPath) : path.join(process.cwd(), 'data', 'napcat-plugin-censor');
         this.startTime = Date.now();
     }
 
-    /**
-     * 获取运行时长（毫秒）
-     */
     getUptime(): number {
-        return Date.now() - this.startTime;
+        return Math.max(0, Date.now() - this.startTime);
     }
 
-    /**
-     * 获取格式化的运行时长
-     */
     getUptimeFormatted(): string {
-        const uptime = this.getUptime();
-        const seconds = Math.floor(uptime / 1000);
-        const minutes = Math.floor(seconds / 60);
-        const hours = Math.floor(minutes / 60);
-        const days = Math.floor(hours / 24);
+        const seconds = Math.floor(this.getUptime() / 1000);
+        const days = Math.floor(seconds / 86400);
+        const hours = Math.floor((seconds % 86400) / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
 
-        if (days > 0) return `${days}天${hours % 24}小时`;
-        if (hours > 0) return `${hours}小时${minutes % 60}分钟`;
-        if (minutes > 0) return `${minutes}分钟${seconds % 60}秒`;
-        return `${seconds}秒`;
+        if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+        if (hours > 0) return `${hours}h ${minutes}m`;
+        if (minutes > 0) return `${minutes}m ${secs}s`;
+        return `${secs}s`;
     }
 
-    /**
-     * 增加处理计数
-     */
-    incrementProcessedCount(): void {
-        const today = new Date().toDateString();
-        if (this.stats.lastUpdateDay !== today) {
-            this.stats.todayProcessed = 0;
-            this.stats.lastUpdateDay = today;
-        }
-        this.stats.todayProcessed++;
-        this.stats.processed++;
-        this.saveConfig();
-    }
-
-    /**
-     * 加载配置
-     */
     loadConfig(ctx?: NapCatPluginContext): void {
         const configPath = ctx?.configPath || this.configPath;
+
         try {
-            if (typeof configPath === 'string' && fs.existsSync(configPath)) {
-                const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-                this.config = { ...getDefaultConfig(), ...sanitizeConfig(raw) };
-                // 加载统计信息
-                if (raw.stats) {
-                    this.stats = { ...this.stats, ...raw.stats };
-                }
-                this.logDebug('📄 已加载本地配置', { path: configPath });
+            if (configPath && fs.existsSync(configPath)) {
+                const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as unknown;
+                this.config = sanitizeConfig(raw);
+                this.stats = sanitizeStats(isRecord(raw) ? raw.stats : undefined, this.stats);
             } else {
                 this.config = getDefaultConfig();
                 this.saveConfig(ctx);
-                this.logDebug('📄 配置文件不存在，已创建默认配置', { path: configPath });
             }
+            this.initialized = true;
         } catch (error) {
-            this.log('error', '❌ 加载配置失败，使用默认配置:', error);
             this.config = getDefaultConfig();
+            this.initialized = true;
+            this.log('error', 'Failed to load config; defaults are active', error);
         }
-        this.initialized = true;
     }
 
-    /**
-     * 保存配置
-     */
     saveConfig(ctx?: NapCatPluginContext, config?: PluginConfig): void {
         const configPath = ctx?.configPath || this.configPath;
-        const configToSave = config || this.config;
+        if (!configPath) {
+            this.log('warn', 'Skipped config save because configPath is empty');
+            return;
+        }
+
         try {
-            const configDir = path.dirname(String(configPath || './'));
+            const configDir = path.dirname(configPath);
             if (!fs.existsSync(configDir)) {
                 fs.mkdirSync(configDir, { recursive: true });
             }
-            // 合并统计信息一起保存
-            const dataToSave = {
-                ...configToSave,
-                stats: this.stats
-            };
+
             fs.writeFileSync(
-                String(configPath),
-                JSON.stringify(dataToSave, null, 2),
+                configPath,
+                JSON.stringify({ ...(config || this.config), stats: this.stats }, null, 2),
                 'utf-8'
             );
-            this.logDebug('💾 配置已保存', { path: configPath });
         } catch (error) {
-            this.log('error', '❌ 保存配置失败:', error);
+            this.log('error', 'Failed to save config', error);
         }
     }
 
-    /**
-     * 获取配置（不包含敏感信息）
-     */
     getConfig(): PluginConfig {
-        return { ...this.config };
+        return {
+            ...this.config,
+            groupConfigs: { ...(this.config.groupConfigs || {}) },
+        };
     }
 
-    /**
-     * 设置配置（合并更新）
-     */
     setConfig(ctx: NapCatPluginContext, update: Partial<PluginConfig>): void {
-        this.config = { ...this.config, ...update };
+        this.config = sanitizeConfig({
+            ...this.config,
+            ...update,
+            groupConfigs: update.groupConfigs ?? this.config.groupConfigs,
+        });
         this.saveConfig(ctx);
     }
 
-    /**
-     * 替换配置（完整替换）
-     */
     replaceConfig(ctx: NapCatPluginContext, config: PluginConfig): void {
         this.config = sanitizeConfig(config);
         this.saveConfig(ctx);
     }
 
-    /**
-     * 更新群配置
-     */
     updateGroupConfig(ctx: NapCatPluginContext, groupId: string, config: GroupConfig): void {
-        if (!this.config.groupConfigs) {
-            this.config.groupConfigs = {};
-        }
-        this.config.groupConfigs[groupId] = {
-            ...this.config.groupConfigs[groupId],
-            ...config
+        const groupConfigs = { ...(this.config.groupConfigs || {}) };
+        groupConfigs[groupId] = {
+            ...groupConfigs[groupId],
+            ...config,
         };
+        this.setConfig(ctx, { groupConfigs });
+    }
+
+    isGroupEnabled(groupId: string | number): boolean {
+        return this.shouldCensorGroup(groupId);
+    }
+
+    shouldCensorGroup(groupId: string | number): boolean {
+        const id = String(groupId);
+        const groupConfig = this.config.groupConfigs?.[id];
+        if (groupConfig?.enabled !== undefined) return groupConfig.enabled;
+
+        const configuredGroups = splitCommaList(this.config.censorGroups);
+        if (configuredGroups.length === 0) return false;
+        return configuredGroups.includes(id);
+    }
+
+    markProcessed(): void {
+        this.rollDailyStatsIfNeeded();
+        this.stats.processed += 1;
+        this.stats.todayProcessed += 1;
+    }
+
+    markBlocked(): void {
+        this.stats.blocked += 1;
+    }
+
+    markReported(): void {
+        this.stats.reported += 1;
+    }
+
+    markBanned(): void {
+        this.stats.banned += 1;
+    }
+
+    incrementProcessedCount(): void {
+        this.markProcessed();
+        this.saveConfig();
+    }
+
+    persistStats(ctx?: NapCatPluginContext): void {
         this.saveConfig(ctx);
     }
 
-    /**
-     * 检查群是否启用
-     */
-    isGroupEnabled(groupId: string): boolean {
-        const groupConfig = this.config.groupConfigs?.[groupId];
-        // 默认启用，除非明确设置为 false
-        return groupConfig?.enabled !== false;
+    private rollDailyStatsIfNeeded(): void {
+        const today = new Date().toDateString();
+        if (this.stats.lastUpdateDay === today) return;
+        this.stats.todayProcessed = 0;
+        this.stats.lastUpdateDay = today;
     }
 }
 
-/** 导出全局单例 */
 export const pluginState = new PluginState();

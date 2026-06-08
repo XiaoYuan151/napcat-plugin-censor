@@ -1,59 +1,50 @@
-/**
- * 插件配置模块
- * 定义默认配置和 WebUI 配置 Schema
- */
-
-import type { NapCatPluginContext } from 'napcat-types/napcat-onebot/network/plugin/types';
+import type { NapCatPluginContext } from './napcat';
 import type { PluginConfig } from './types';
 
-/** 默认配置 */
+export const DEFAULT_DICTIONARY_URL = 'https://xiaoyuan151.github.io/censor/dictionary.b64';
+export const DEFAULT_GUARD_API_URL = 'https://xiaoyuan151-qwen3guard-gen-0-6b.hf.space/v1/chat/completions';
+
 export const DEFAULT_CONFIG: PluginConfig = {
     enabled: true,
     debug: false,
-    commandPrefix: '#cmd',
-    cooldownSeconds: 60,
+    adminIds: '',
+    censorGroups: '',
+    censorWords: '',
+    maxViolations: 10,
+    banDurationSeconds: 600,
+    reportBatchSize: 10,
+    showFilterNotice: true,
+    dictionaryUrl: DEFAULT_DICTIONARY_URL,
+    guardApiUrl: DEFAULT_GUARD_API_URL,
+    guardTimeoutMs: 10000,
     groupConfigs: {},
-    // TODO: 在这里添加你的默认配置值
 };
 
-/**
- * 初始化 WebUI 配置 Schema
- * 使用 NapCat 提供的构建器生成配置界面
- * 
- * 可用的 UI 组件：
- * - ctx.NapCatConfig.boolean(key, label, defaultValue?, description?, reactive?) - 开关
- * - ctx.NapCatConfig.text(key, label, defaultValue?, description?, reactive?) - 文本输入
- * - ctx.NapCatConfig.number(key, label, defaultValue?, description?, reactive?) - 数字输入
- * - ctx.NapCatConfig.select(key, label, options, defaultValue?, description?, reactive?) - 下拉选择
- * - ctx.NapCatConfig.html(htmlString) - 自定义 HTML
- * - ctx.NapCatConfig.combine(...schemas) - 组合多个配置项
- */
 export function initConfigUI(ctx: NapCatPluginContext) {
-    const schema = ctx.NapCatConfig.combine(
-        // 插件信息头部
-        ctx.NapCatConfig.html(`
-            <div style="padding: 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; margin-bottom: 20px; color: white;">
-                <h3 style="margin: 0 0 8px 0; font-size: 18px; font-weight: bold;">🔌 插件模板</h3>
-                <p style="margin: 0; font-size: 14px; opacity: 0.9;">这是一个 NapCat 插件开发模板，请根据需要修改配置。</p>
+    const { NapCatConfig } = ctx;
+
+    return NapCatConfig.combine(
+        NapCatConfig.html(`
+            <div style="padding: 14px 16px; border-radius: 8px; background: #f6f8fa; margin-bottom: 16px;">
+                <strong>群组消息审查</strong>
+                <p style="margin: 6px 0 0; color: #57606a; font-size: 13px;">按群启用敏感词和模型审查，自动撤回违规消息。</p>
             </div>
         `),
-        // 全局开关
-        ctx.NapCatConfig.boolean('enabled', '启用插件', true, '是否启用此插件的功能'),
-        // 调试模式
-        ctx.NapCatConfig.boolean('debug', '调试模式', false, '启用后将输出详细的调试日志'),
-        // 命令前缀
-        ctx.NapCatConfig.text('commandPrefix', '命令前缀', '#cmd', '触发命令的前缀，默认为 #cmd'),
-        // 冷却时间
-        ctx.NapCatConfig.number('cooldownSeconds', '冷却时间（秒）', 60, '同一命令请求冷却时间，0 表示不限制')
-        // TODO: 在这里添加你的配置项
+        NapCatConfig.boolean('enabled', '启用插件', DEFAULT_CONFIG.enabled, '关闭后不处理任何消息'),
+        NapCatConfig.boolean('debug', '调试日志', DEFAULT_CONFIG.debug, '输出更详细的运行日志'),
+        NapCatConfig.text('adminIds', '管理员 QQ', DEFAULT_CONFIG.adminIds, '多个 QQ 使用英文逗号分隔，用于接收违规记录'),
+        NapCatConfig.text('censorGroups', '审查群号', DEFAULT_CONFIG.censorGroups, '多个群号使用英文逗号分隔；也可在 WebUI 群管理中启用'),
+        NapCatConfig.text('censorWords', '自定义敏感词', DEFAULT_CONFIG.censorWords, '多个词使用英文逗号分隔，优先于词库检查'),
+        NapCatConfig.number('maxViolations', '禁言触发次数', DEFAULT_CONFIG.maxViolations, '同一用户达到次数后自动禁言，0 表示不禁言'),
+        NapCatConfig.number('banDurationSeconds', '禁言时长（秒）', DEFAULT_CONFIG.banDurationSeconds, '触发禁言后的持续时间'),
+        NapCatConfig.number('reportBatchSize', '违规记录批量发送数', DEFAULT_CONFIG.reportBatchSize, '累计多少条违规记录后发送给管理员'),
+        NapCatConfig.boolean('showFilterNotice', '发送过滤提示', DEFAULT_CONFIG.showFilterNotice, '撤回消息后在群内提示用户'),
+        NapCatConfig.text('dictionaryUrl', '远程词库地址', DEFAULT_CONFIG.dictionaryUrl, '本地词库不可用时会从该地址加载 base64 词库'),
+        NapCatConfig.text('guardApiUrl', '模型审查 API', DEFAULT_CONFIG.guardApiUrl, '兼容 OpenAI chat completions 的审查接口'),
+        NapCatConfig.number('guardTimeoutMs', '模型审查超时（毫秒）', DEFAULT_CONFIG.guardTimeoutMs, '超过时间则跳过模型结果')
     );
-
-    return schema;
 }
 
-/**
- * 获取默认配置的副本
- */
 export function getDefaultConfig(): PluginConfig {
     return {
         ...DEFAULT_CONFIG,

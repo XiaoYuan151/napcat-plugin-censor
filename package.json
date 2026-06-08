@@ -3,7 +3,7 @@
     "plugin": "群组消息审查",
     "version": "1.0.0",
     "type": "module",
-    "main": "index.mjs",
+    "main": "dist/index.mjs",
     "description": "审查群组消息，并自动撤回不适宜消息。",
     "author": "XiaoYuan151",
     "license": "MIT",
@@ -20,9 +20,7 @@
         "minVersion": "4.14.0",
         "homepage": "https://github.com/XiaoYuan151/napcat-plugin-censor"
     },
-    "dependencies": {
-        "napcat-types": "0.0.16"
-    },
+    "dependencies": {},
     "devDependencies": {
         "@rollup/plugin-node-resolve": "^15.0.0",
         "@types/express": "^5.0.6",
@@ -34,7 +32,10 @@
         "build": "pnpm run build:webui && vite build",
         "build:webui": "cd src/webui && pnpm install && pnpm run build",
         "dev:webui": "cd src/webui && pnpm run dev",
+        "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
         "watch": "vite build --watch",
-        "typecheck": "tsc --noEmit"
+        "typecheck": "pnpm run typecheck:plugin && pnpm run typecheck:webui",
+        "typecheck:plugin": "tsc --noEmit",
+        "typecheck:webui": "cd src/webui && pnpm install && tsc --noEmit"
     }
 }
